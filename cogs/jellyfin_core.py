@@ -580,27 +580,19 @@ class JellyfinCore(commands.Cog):
                         except Exception as e:
                             self.logger.warning(f"Failed to get episode count for {library_name}: {e}")
 
-                            # Create base stats dictionary
-                            library_stats = {
-                                "count": movie_count + series_count,
-                                "display_name": config.get("display_name", library.get("Name", "Unknown Library")),
-                                "emoji": emoji,
-                                "show_episodes": int(config.get("show_episodes", 0))  # Ensure integer
-                            }
+                    # Create base stats dictionary
+                    library_stats = {
+                        "count": movie_count + series_count,
+                        "display_name": config.get("display_name", library.get("Name", "Unknown Library")),
+                        "emoji": emoji,
+                        "show_episodes": int(config.get("show_episodes", 0))  # Ensure integer
+                    }
 
-                            # Only add episodes if show_episodes is 1
-                            if int(config.get("show_episodes", 0)) == 1:
-                                library_stats["episodes"] = episode_count
+                    # Only add episodes if show_episodes is 1
+                    if int(config.get("show_episodes", 0)) == 1:
+                        library_stats["episodes"] = episode_count
 
-                            stats[library_id] = library_stats
-                        else:
-                            # Get the response body for more detailed error information
-                            error_body = await items_response.text()
-                            self.logger.error(f"Failed to get items for library {library_name}: HTTP {items_response.status}")
-                            self.logger.error(f"Error response body: {error_body}")
-                            self.logger.error(f"Request URL: {items_response.url}")
-                            self.logger.error(f"Request headers: {headers}")
-                            self.logger.error(f"Request params: {params}")
+                    stats[library_id] = library_stats
 
             self.library_cache = stats
             self.last_library_update = current_time
