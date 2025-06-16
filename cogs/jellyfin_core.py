@@ -262,63 +262,100 @@ class JellyfinCore(commands.Cog):
             return {}
 
     async def connect_to_jellyfin(self) -> bool:
-        """Attempt to establish a connection to the Jellyfin server."""
-        try:
-            # Common headers for all requests
-            headers = {
-                "X-Emby-Client": "JellyWatch",
-                "X-Emby-Client-Version": "1.0.0",
-                "X-Emby-Device-Name": "JellyWatch",
-                "X-Emby-Device-Id": "jellywatch-bot",
-                "Accept": "application/json",
-                "X-Emby-Authorization": "MediaBrowser Client=\"JellyWatch\", Device=\"JellyWatch\", DeviceId=\"jellywatch-bot\", Version=\"1.0.0\""
-            }
-
-            # First try with API key if available
-            if self.JELLYFIN_API_KEY:
-                headers["X-Emby-Token"] = self.JELLYFIN_API_KEY
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(f"{self.JELLYFIN_URL}/System/Info", headers=headers) as response:
-                        if response.status == 200:
-                            if self.jellyfin_start_time is None:
-                                self.jellyfin_start_time = time.time()
-                            return True
-                        elif response.status == 401:
-                            self.logger.error("Invalid API key provided")
-                            return False
-                        else:
-                            self.logger.error(f"Failed to connect with API key: HTTP {response.status}")
-                            return False
-
-            # If API key fails or not available, try username/password
-            if self.JELLYFIN_USERNAME and self.JELLYFIN_PASSWORD:
-                auth_data = {
-                    "Username": self.JELLYFIN_USERNAME,
-                    "Pw": self.JELLYFIN_PASSWORD
+        """Attempt to establish a connection to the Jellyfin server with timeout and retry logic."""
+        max_retries = 3
+        base_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                self.logger.info(f"Jellyfin connection attempt {attempt + 1}/{max_retries}")
+                
+                # Configure timeout (10s connect, 30s total)
+                timeout = aiohttp.ClientTimeout(total=30, connect=10)
+                
+                # Common headers for all requests
+                headers = {
+                    "X-Emby-Client": "JellyWatch",
+                    "X-Emby-Client-Version": "1.0.0",
+                    "X-Emby-Device-Name": "JellyWatch",
+                    "X-Emby-Device-Id": "jellywatch-bot",
+                    "Accept": "application/json",
+                    "X-Emby-Authorization": "MediaBrowser Client=\"JellyWatch\", Device=\"JellyWatch\", DeviceId=\"jellywatch-bot\", Version=\"1.0.0\""
                 }
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        f"{self.JELLYFIN_URL}/Users/AuthenticateByName",
-                        json=auth_data,
-                        headers=headers
-                    ) as response:
-                        if response.status == 200:
-                            if self.jellyfin_start_time is None:
-                                self.jellyfin_start_time = time.time()
-                            return True
-                        elif response.status == 401:
-                            self.logger.error("Invalid username or password")
-                            return False
-                        else:
-                            self.logger.error(f"Failed to authenticate with username/password: HTTP {response.status}")
-                            return False
 
-            self.logger.error("No authentication method provided (API key or username/password required)")
-            return False
-        except Exception as e:
-            self.logger.error(f"Failed to connect to Jellyfin server: {e}")
-            self.jellyfin_start_time = None
-            return False
+                # First try with API key if available
+                if self.JELLYFIN_API_KEY:
+                    headers["X-Emby-Token"] = self.JELLYFIN_API_KEY
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(f"{self.JELLYFIN_URL}/System/Info", headers=headers) as response:
+                            if response.status == 200:
+                                self.logger.info("Successfully connected to Jellyfin with API key")
+                                if self.jellyfin_start_time is None:
+                                    self.jellyfin_start_time = time.time()
+                                return True
+                            elif response.status == 401:
+                                self.logger.error("Invalid API key provided")
+                                return False
+                            else:
+                                self.logger.warning(f"Failed to connect with API key: HTTP {response.status}")
+                                if attempt == max_retries - 1:
+                                    return False
+
+                # If API key fails or not available, try username/password
+                if self.JELLYFIN_USERNAME and self.JELLYFIN_PASSWORD:
+                    auth_data = {
+                        "Username": self.JELLYFIN_USERNAME,
+                        "Pw": self.JELLYFIN_PASSWORD
+                    }
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.post(
+                            f"{self.JELLYFIN_URL}/Users/AuthenticateByName",
+                            json=auth_data,
+                            headers=headers
+                        ) as response:
+                            if response.status == 200:
+                                self.logger.info("Successfully connected to Jellyfin with username/password")
+                                if self.jellyfin_start_time is None:
+                                    self.jellyfin_start_time = time.time()
+                                return True
+                            elif response.status == 401:
+                                self.logger.error("Invalid username or password")
+                                return False
+                            else:
+                                self.logger.warning(f"Failed to authenticate with username/password: HTTP {response.status}")
+                                if attempt == max_retries - 1:
+                                    return False
+
+                if attempt == max_retries - 1:
+                    self.logger.error("No authentication method provided (API key or username/password required)")
+                    return False
+                    
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Connection timeout on attempt {attempt + 1}/{max_retries}")
+                if attempt == max_retries - 1:
+                    self.logger.error("Failed to connect to Jellyfin: Connection timeout after all retries")
+                    self.jellyfin_start_time = None
+                    return False
+            except aiohttp.ClientConnectorError as e:
+                self.logger.warning(f"Connection error on attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt == max_retries - 1:
+                    self.logger.error(f"Failed to connect to Jellyfin: Connection error after all retries: {e}")
+                    self.jellyfin_start_time = None
+                    return False
+            except Exception as e:
+                self.logger.warning(f"Unexpected error on attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt == max_retries - 1:
+                    self.logger.error(f"Failed to connect to Jellyfin: Unexpected error after all retries: {e}")
+                    self.jellyfin_start_time = None
+                    return False
+            
+            # Exponential backoff for retries
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                self.logger.info(f"Retrying in {delay} seconds...")
+                await asyncio.sleep(delay)
+        
+        return False
 
     @tasks.loop(seconds=30)
     async def update_status(self) -> None:
@@ -376,10 +413,14 @@ class JellyfinCore(commands.Cog):
                 "X-Emby-Authorization": "MediaBrowser Client=\"JellyWatch\", Device=\"JellyWatch\", DeviceId=\"jellywatch-bot\", Version=\"1.0.0\""
             }
 
-            async with aiohttp.ClientSession() as session:
+            # Configure timeout for all requests
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 # Get system info
                 async with session.get(f"{self.JELLYFIN_URL}/System/Info", headers=headers) as response:
                     if response.status != 200:
+                        self.logger.error(f"Failed to get system info: HTTP {response.status}")
                         return {}
                     system_info = await response.json()
                 
@@ -438,7 +479,10 @@ class JellyfinCore(commands.Cog):
                 "X-Emby-Authorization": "MediaBrowser Client=\"JellyWatch\", Device=\"JellyWatch\", DeviceId=\"jellywatch-bot\", Version=\"1.0.0\""
             }
             
-            async with aiohttp.ClientSession() as session:
+            # Configure timeout for all requests (longer for library stats due to potentially large libraries)
+            timeout = aiohttp.ClientTimeout(total=60, connect=10)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 # Get all libraries
                 async with session.get(f"{self.JELLYFIN_URL}/Library/VirtualFolders", headers=headers) as response:
                     if response.status != 200:
@@ -467,23 +511,74 @@ class JellyfinCore(commands.Cog):
                     # Use the configured emoji directly
                     emoji = config.get("emoji", LIBRARY_EMOJIS["default"])
 
-                    # Get item counts
-                    params = {
+                    # Get item counts using more efficient separate queries to avoid timeouts
+                    movie_count = 0
+                    series_count = 0
+                    episode_count = 0
+                    
+                    # Count movies
+                    movie_params = {
                         "ParentId": library_id,
                         "Recursive": "true",
-                        "IncludeItemTypes": "Movie,Series,Episode",
-                        "Fields": "BasicSyncInfo,MediaSources"
+                        "IncludeItemTypes": "Movie",
+                        "Fields": "",
+                        "Limit": 1,
+                        "EnableTotalRecordCount": "true"
                     }
-                    async with session.get(
-                        f"{self.JELLYFIN_URL}/Items",
-                        headers=headers,
-                        params=params
-                    ) as items_response:
-                        if items_response.status == 200:
-                            items = await items_response.json()
-                            movie_count = sum(1 for item in items["Items"] if item["Type"] == "Movie")
-                            series_count = sum(1 for item in items["Items"] if item["Type"] == "Series")
-                            episode_count = sum(1 for item in items["Items"] if item["Type"] == "Episode")
+                    try:
+                        async with session.get(
+                            f"{self.JELLYFIN_URL}/Items",
+                            headers=headers,
+                            params=movie_params
+                        ) as movie_response:
+                            if movie_response.status == 200:
+                                movie_data = await movie_response.json()
+                                movie_count = movie_data.get("TotalRecordCount", 0)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to get movie count for {library_name}: {e}")
+                    
+                    # Count series
+                    series_params = {
+                        "ParentId": library_id,
+                        "Recursive": "true",
+                        "IncludeItemTypes": "Series",
+                        "Fields": "",
+                        "Limit": 1,
+                        "EnableTotalRecordCount": "true"
+                    }
+                    try:
+                        async with session.get(
+                            f"{self.JELLYFIN_URL}/Items",
+                            headers=headers,
+                            params=series_params
+                        ) as series_response:
+                            if series_response.status == 200:
+                                series_data = await series_response.json()
+                                series_count = series_data.get("TotalRecordCount", 0)
+                    except Exception as e:
+                        self.logger.warning(f"Failed to get series count for {library_name}: {e}")
+                    
+                    # Count episodes only if needed
+                    if config.get("show_episodes", 0):
+                        episode_params = {
+                            "ParentId": library_id,
+                            "Recursive": "true",
+                            "IncludeItemTypes": "Episode",
+                            "Fields": "",
+                            "Limit": 1,
+                            "EnableTotalRecordCount": "true"
+                        }
+                        try:
+                            async with session.get(
+                                f"{self.JELLYFIN_URL}/Items",
+                                headers=headers,
+                                params=episode_params
+                            ) as episode_response:
+                                if episode_response.status == 200:
+                                    episode_data = await episode_response.json()
+                                    episode_count = episode_data.get("TotalRecordCount", 0)
+                        except Exception as e:
+                            self.logger.warning(f"Failed to get episode count for {library_name}: {e}")
 
                             # Create base stats dictionary
                             library_stats = {
@@ -512,7 +607,7 @@ class JellyfinCore(commands.Cog):
             self.logger.info(f"Library stats updated and cached (interval: {self.library_update_interval}s)")
             return stats
         except Exception as e:
-            self.logger.error(f"Error updating library stats: {e}")
+            self.logger.error(f"Error updating library stats: {e}", exc_info=True)
             return self.library_cache
 
     async def get_sessions(self) -> List[Dict[str, Any]]:
@@ -531,7 +626,10 @@ class JellyfinCore(commands.Cog):
                 "X-Emby-Authorization": "MediaBrowser Client=\"JellyWatch\", Device=\"JellyWatch\", DeviceId=\"jellywatch-bot\", Version=\"1.0.0\""
             }
             
-            async with aiohttp.ClientSession() as session:
+            # Configure timeout for all requests
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(f"{self.JELLYFIN_URL}/Sessions", headers=headers) as response:
                     if response.status == 200:
                         return await response.json()
@@ -702,7 +800,10 @@ class JellyfinCore(commands.Cog):
         return embed
 
     async def _update_dashboard_message(self, channel: discord.TextChannel, embed: discord.Embed) -> None:
-        """Update or create the dashboard message."""
+        """Update or create the dashboard message with improved rate limiting."""
+        max_retries = 3
+        base_delay = 1
+        
         try:
             if not channel:
                 self.logger.error("Dashboard channel not found")
@@ -710,35 +811,78 @@ class JellyfinCore(commands.Cog):
 
             if self.dashboard_message_id:
                 self.logger.info(f"Attempting to edit existing message ID: {self.dashboard_message_id}")
-                try:
-                    message = await channel.fetch_message(self.dashboard_message_id)
-                    await message.edit(embed=embed)
-                    self.logger.info("Successfully edited existing dashboard message")
-                    return
-                except discord.RateLimited as e:
-                    self.logger.warning(f"Rate limited, waiting {e.retry_after} seconds")
-                    await asyncio.sleep(e.retry_after)
-                    # Retry once
+                
+                # Try with exponential backoff for rate limiting
+                for attempt in range(max_retries):
                     try:
                         message = await channel.fetch_message(self.dashboard_message_id)
                         await message.edit(embed=embed)
-                        self.logger.info("Successfully edited dashboard message after rate limit")
+                        self.logger.info("Successfully edited existing dashboard message")
                         return
-                    except Exception as retry_e:
-                        self.logger.error(f"Failed to edit message after rate limit: {retry_e}")
+                    except discord.RateLimited as e:
+                        if attempt == max_retries - 1:
+                            self.logger.error(f"Failed to edit message after {max_retries} rate limit attempts")
+                            return
+                        
+                        retry_delay = max(e.retry_after, base_delay * (2 ** attempt))
+                        self.logger.warning(f"Rate limited on attempt {attempt + 1}/{max_retries}, waiting {retry_delay:.1f} seconds")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    except discord.NotFound:
+                        self.logger.warning(f"Dashboard message {self.dashboard_message_id} not found, will create new message")
+                        self.dashboard_message_id = None
+                        break  # Exit retry loop to create new message
+                    except discord.Forbidden:
+                        self.logger.error("Bot doesn't have permission to edit messages in the channel")
                         return
-                except discord.NotFound:
-                    self.logger.warning(f"Dashboard message {self.dashboard_message_id} not found, will create new message")
-                    self.dashboard_message_id = None
-                except discord.Forbidden:
-                    self.logger.error("Bot doesn't have permission to edit messages in the channel")
-                    return
+                    except discord.HTTPException as e:
+                        if attempt == max_retries - 1:
+                            self.logger.error(f"HTTP error editing message after {max_retries} attempts: {e}")
+                            return
+                        
+                        delay = base_delay * (2 ** attempt)
+                        self.logger.warning(f"HTTP error on attempt {attempt + 1}/{max_retries}, retrying in {delay} seconds: {e}")
+                        await asyncio.sleep(delay)
+                        continue
+                    except Exception as e:
+                        self.logger.error(f"Unexpected error editing message: {e}")
+                        return
 
-            self.logger.info("Creating new dashboard message")
-            message = await channel.send(embed=embed)
-            self.dashboard_message_id = message.id
-            self._save_message_id(message.id)
-            self.logger.info(f"Successfully created new dashboard message with ID: {message.id}")
+            # Create new message if we don't have an ID or message was not found
+            if not self.dashboard_message_id:
+                for attempt in range(max_retries):
+                    try:
+                        self.logger.info(f"Creating new dashboard message (attempt {attempt + 1}/{max_retries})")
+                        message = await channel.send(embed=embed)
+                        self.dashboard_message_id = message.id
+                        self._save_message_id(message.id)
+                        self.logger.info(f"Successfully created new dashboard message with ID: {message.id}")
+                        return
+                    except discord.RateLimited as e:
+                        if attempt == max_retries - 1:
+                            self.logger.error(f"Failed to create message after {max_retries} rate limit attempts")
+                            return
+                        
+                        retry_delay = max(e.retry_after, base_delay * (2 ** attempt))
+                        self.logger.warning(f"Rate limited creating message on attempt {attempt + 1}/{max_retries}, waiting {retry_delay:.1f} seconds")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    except discord.Forbidden:
+                        self.logger.error("Bot doesn't have permission to send messages in the channel")
+                        return
+                    except discord.HTTPException as e:
+                        if attempt == max_retries - 1:
+                            self.logger.error(f"HTTP error creating message after {max_retries} attempts: {e}")
+                            return
+                        
+                        delay = base_delay * (2 ** attempt)
+                        self.logger.warning(f"HTTP error creating message on attempt {attempt + 1}/{max_retries}, retrying in {delay} seconds: {e}")
+                        await asyncio.sleep(delay)
+                        continue
+                    except Exception as e:
+                        self.logger.error(f"Unexpected error creating message: {e}")
+                        return
+                        
         except Exception as e:
             self.logger.error(f"Error updating dashboard message: {e}", exc_info=True)
 
@@ -764,7 +908,10 @@ class JellyfinCore(commands.Cog):
                 "X-Emby-Authorization": "MediaBrowser Client=\"JellyWatch\", Device=\"JellyWatch\", DeviceId=\"jellywatch-bot\", Version=\"1.0.0\""
             }
             
-            async with aiohttp.ClientSession() as session:
+            # Configure timeout for all requests
+            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(f"{self.JELLYFIN_URL}/Library/VirtualFolders", headers=headers) as response:
                     if response.status != 200:
                         await interaction.followup.send("❌ Failed to fetch libraries from Jellyfin.", ephemeral=True)
@@ -826,6 +973,10 @@ class JellyfinCore(commands.Cog):
 
             # Save updated config
             self.save_config()
+            
+            # Clear the library cache to force refresh
+            self.library_cache = {}
+            self.last_library_update = None
             
             # Send initial success message
             await interaction.followup.send("✅ Libraries updated successfully! Refreshing dashboard in 10 seconds...", ephemeral=True)
