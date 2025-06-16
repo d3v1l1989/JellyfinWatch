@@ -338,8 +338,12 @@ class JellyfinCore(commands.Cog):
     async def update_dashboard(self) -> None:
         """Update the dashboard message periodically."""
         try:
+            self.logger.info(f"Dashboard update starting - Channel ID: {self.CHANNEL_ID}")
+            self.logger.info(f"Dashboard message ID: {self.dashboard_message_id}")
+            
             info = await self.get_server_info()
             if not info:
+                self.logger.warning("No server info received - Jellyfin may be unreachable")
                 return
 
             channel = self.bot.get_channel(self.CHANNEL_ID)
@@ -347,15 +351,19 @@ class JellyfinCore(commands.Cog):
                 self.logger.error("Dashboard channel not found")
                 return
 
+            self.logger.info(f"Creating dashboard embed with info keys: {list(info.keys())}")
             embed = await self.create_dashboard_embed(info)
             await self._update_dashboard_message(channel, embed)
+            self.logger.info("Dashboard update completed successfully")
         except Exception as e:
-            self.logger.error(f"Error updating dashboard: {e}")
+            self.logger.error(f"Error updating dashboard: {e}", exc_info=True)
 
     async def get_server_info(self) -> Dict[str, Any]:
         """Get server information from Jellyfin."""
         try:
+            self.logger.info("Attempting to connect to Jellyfin...")
             if not await self.connect_to_jellyfin():
+                self.logger.error("Failed to connect to Jellyfin server")
                 return {}
 
             headers = {
@@ -701,9 +709,11 @@ class JellyfinCore(commands.Cog):
                 return
 
             if self.dashboard_message_id:
+                self.logger.info(f"Attempting to edit existing message ID: {self.dashboard_message_id}")
                 try:
                     message = await channel.fetch_message(self.dashboard_message_id)
                     await message.edit(embed=embed)
+                    self.logger.info("Successfully edited existing dashboard message")
                     return
                 except discord.RateLimited as e:
                     self.logger.warning(f"Rate limited, waiting {e.retry_after} seconds")
@@ -712,21 +722,25 @@ class JellyfinCore(commands.Cog):
                     try:
                         message = await channel.fetch_message(self.dashboard_message_id)
                         await message.edit(embed=embed)
+                        self.logger.info("Successfully edited dashboard message after rate limit")
                         return
                     except Exception as retry_e:
                         self.logger.error(f"Failed to edit message after rate limit: {retry_e}")
                         return
                 except discord.NotFound:
+                    self.logger.warning(f"Dashboard message {self.dashboard_message_id} not found, will create new message")
                     self.dashboard_message_id = None
                 except discord.Forbidden:
                     self.logger.error("Bot doesn't have permission to edit messages in the channel")
                     return
 
+            self.logger.info("Creating new dashboard message")
             message = await channel.send(embed=embed)
             self.dashboard_message_id = message.id
             self._save_message_id(message.id)
+            self.logger.info(f"Successfully created new dashboard message with ID: {message.id}")
         except Exception as e:
-            self.logger.error(f"Error updating dashboard message: {e}")
+            self.logger.error(f"Error updating dashboard message: {e}", exc_info=True)
 
     @app_commands.command(name="update_libraries", description="Update library sections in the dashboard")
     @app_commands.check(is_authorized)

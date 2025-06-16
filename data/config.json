@@ -6,7 +6,7 @@
         "color": "#00A4DC"
     },
     "jellyfin_sections": {
-        "show_all": 0,
+        "show_all": 1,
         "sections": {
             "Movies": {
                 "display_name": "Movies",
