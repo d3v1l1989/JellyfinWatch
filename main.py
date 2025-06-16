@@ -66,16 +66,28 @@ async def load_cogs() -> None:
             except commands.ExtensionError as e:
                 bot_logger.error(f"Failed to load cog {filename[:-3]}: {e}")
 
+async def sync_with_retry() -> None:
+    """Sync command tree with exponential backoff retry logic."""
+    for attempt in range(3):
+        try:
+            await tree.sync()
+            bot_logger.info("Command tree synced")
+            return
+        except discord.RateLimited as e:
+            bot_logger.warning(f"Rate limited during sync, waiting {e.retry_after}s (attempt {attempt + 1}/3)")
+            await asyncio.sleep(e.retry_after)
+        except discord.HTTPException as e:
+            bot_logger.error(f"Failed to sync command tree (attempt {attempt + 1}/3): {e}")
+            if attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+    bot_logger.error("Failed to sync command tree after 3 attempts")
+
 @bot.event
 async def on_ready() -> None:
     """Handle bot startup: log readiness, load cogs, and sync command tree."""
     bot_logger.info(f"Bot is online as {bot.user.name}")
     await load_cogs()
-    try:
-        await tree.sync()
-        bot_logger.info("Command tree synced")
-    except discord.HTTPException as e:
-        bot_logger.error(f"Failed to sync command tree: {e}")
+    await sync_with_retry()
 
 @tree.command(name="load", description="Load a specific cog")
 async def load(interaction: discord.Interaction, cog: str) -> None:

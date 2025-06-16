@@ -705,6 +705,17 @@ class JellyfinCore(commands.Cog):
                     message = await channel.fetch_message(self.dashboard_message_id)
                     await message.edit(embed=embed)
                     return
+                except discord.RateLimited as e:
+                    self.logger.warning(f"Rate limited, waiting {e.retry_after} seconds")
+                    await asyncio.sleep(e.retry_after)
+                    # Retry once
+                    try:
+                        message = await channel.fetch_message(self.dashboard_message_id)
+                        await message.edit(embed=embed)
+                        return
+                    except Exception as retry_e:
+                        self.logger.error(f"Failed to edit message after rate limit: {retry_e}")
+                        return
                 except discord.NotFound:
                     self.dashboard_message_id = None
                 except discord.Forbidden:
